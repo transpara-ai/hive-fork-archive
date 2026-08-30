@@ -1,0 +1,47 @@
+{
+  "author_lineages": [
+    "openai",
+    "anthropic"
+  ],
+  "base_head": "138472d26708cc6277625210ad46ae9b12aee10c",
+  "blocker_count": 3,
+  "factory_order_blob": "924797d10f96e404aa01d98c1c35e085b381daa7",
+  "findings": [
+    {
+      "id": "IADA-HIVE-WF-001",
+      "severity": "blocker",
+      "summary": "The adapter depends on a TLC contract that is not yet implementable."
+    },
+    {
+      "id": "IADA-HIVE-WF-002",
+      "severity": "blocker",
+      "summary": "Installed-plugin prerequisites make implementation sequencing circular."
+    },
+    {
+      "id": "IADA-HIVE-WF-003",
+      "severity": "blocker",
+      "summary": "No structured Human action distinguishes Fable selection from Issue prose."
+    },
+    {
+      "id": "IADA-HIVE-WF-004",
+      "severity": "major",
+      "summary": "Interrupted selected-provider calls lack consumed-selection semantics."
+    },
+    {
+      "id": "IADA-HIVE-WF-005",
+      "severity": "major",
+      "summary": "The zero-duplicate criterion overclaims the stated provider consistency model."
+    }
+  ],
+  "gate": "IADA",
+  "implementation_request_blob": "67d51c454ab7655f083626fb8becac40be218a4a",
+  "independent": false,
+  "packet_blob": "b6a5f08adb0be58fd5c5efc35ac7ae971c7126ae",
+  "packet_id": "HIVE-TLC-CHANGE-WORKFLOW-CIVILIZATION-ADAPTER",
+  "packet_path": "docs/designs/tlc-change-workflow-civilization-adapter-v0.3.0.md",
+  "packet_sha256": "65dc1695faf51bfe1ea73af20ed39cbe0c23349280f2e9c2c4e51692a398605d",
+  "packet_version": "0.3.0",
+  "ready_for_cfada": false,
+  "repo": "transpara-ai/hive",
+  "result": "blocked"
+}

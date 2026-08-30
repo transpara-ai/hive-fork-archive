@@ -26,6 +26,7 @@ var (
 	EventTypeFactoryV1InterventionResolved  = types.MustEventType(string(factoryv1.EventInterventionResolved))
 	EventTypeFactoryV1RecoveryRecorded      = types.MustEventType(string(factoryv1.EventRecoveryRecorded))
 	EventTypeFactoryV1IssueAmendment        = types.MustEventType(string(factoryv1.EventIssueAmendmentRecorded))
+	EventTypeFactoryV1ContinuationRecorded  = types.MustEventType(string(factoryv1.EventContinuationRecorded))
 )
 
 func factoryV1EventTypes() []types.EventType {
@@ -39,6 +40,7 @@ func factoryV1EventTypes() []types.EventType {
 		EventTypeFactoryV1InterventionResolved,
 		EventTypeFactoryV1RecoveryRecorded,
 		EventTypeFactoryV1IssueAmendment,
+		EventTypeFactoryV1ContinuationRecorded,
 	}
 }
 

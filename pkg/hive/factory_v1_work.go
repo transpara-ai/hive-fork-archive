@@ -16,9 +16,12 @@ import (
 )
 
 const (
-	factoryV1WorkMetadataLabel   = "factory_v1_order"
-	factoryV1WorkQuarantineLabel = "factory_v1_quarantine"
-	factoryV1WorkPageSize        = 256
+	factoryV1WorkMetadataLabel           = "factory_v1_order"
+	factoryV1WorkQuarantineLabel         = "factory_v1_quarantine"
+	factoryV1ContinuationSeedLabel       = "civilization_tlc_continuation_v1"
+	factoryV1ContinuationRecordPrefix    = "civilization_tlc_continuation_v1_record:"
+	factoryV1ContinuationQuarantineLabel = "civilization_tlc_continuation_v1_quarantine"
+	factoryV1WorkPageSize                = 256
 )
 
 type factoryV1WorkMetadata struct {
@@ -37,6 +40,21 @@ type factoryV1WorkQuarantine struct {
 	SchemaVersion string `json:"schema_version"`
 	OrderID       string `json:"order_id"`
 	Version       string `json:"version"`
+	Reason        string `json:"reason"`
+}
+
+type factoryV1ContinuationWorkSeed struct {
+	SchemaVersion    string                       `json:"schema_version"`
+	ChainID          string                       `json:"chain_id"`
+	SourceChainHead  string                       `json:"source_chain_head"`
+	TargetRepository factoryv1.RepositoryIdentity `json:"target_repository"`
+	SourceEventID    string                       `json:"source_event_id"`
+	IdempotencyKey   string                       `json:"idempotency_key"`
+}
+
+type factoryV1ContinuationWorkQuarantine struct {
+	SchemaVersion string `json:"schema_version"`
+	ChainID       string `json:"chain_id"`
 	Reason        string `json:"reason"`
 }
 
@@ -322,6 +340,247 @@ func (s *FactoryV1WorkStore) AttachStageArtifact(ctx context.Context, artifact f
 		}
 	}
 	return "", errors.New("Work stage artifact append was not observable")
+}
+
+func (s *FactoryV1WorkStore) SeedContinuation(ctx context.Context, seed factoryv1.ContinuationWorkSeed) (factoryv1.ContinuationWorkLink, error) {
+	if err := ctx.Err(); err != nil {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	if existing, err := s.GetContinuation(ctx, seed.ChainID); err == nil {
+		if existing.SourceChainHead != seed.SourceChainHead || existing.SourceEventID != seed.SourceEventID || existing.TargetRepository != seed.TargetRepository || existing.Quarantined {
+			return factoryv1.ContinuationWorkLink{}, factoryv1.ErrAcceptedTupleConflict
+		}
+		return existing, nil
+	} else if !errors.Is(err, factoryv1.ErrWorkNotFound) {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	sourceEventID, err := types.NewEventID(seed.SourceEventID)
+	if err != nil {
+		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("continuation source EventGraph event id: %w", err)
+	}
+	task, err := s.tasks.Create(
+		s.actor,
+		"TLC continuation: "+seed.ChainID,
+		"Versioned TLC change workflow continuation for "+seed.TargetRepository.OwnerName,
+		[]types.EventID{sourceEventID},
+		s.conv,
+		work.PriorityHigh,
+	)
+	if err != nil {
+		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("seed continuation Work task: %w", err)
+	}
+	metadata := factoryV1ContinuationWorkSeed{
+		SchemaVersion: factoryv1.ContinuationSchemaVersion, ChainID: seed.ChainID,
+		SourceChainHead: seed.SourceChainHead, TargetRepository: seed.TargetRepository,
+		SourceEventID: seed.SourceEventID, IdempotencyKey: seed.IdempotencyKey,
+	}
+	body, err := json.Marshal(metadata)
+	if err != nil {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	if err := s.tasks.AddArtifact(s.actor, task.ID, factoryV1ContinuationSeedLabel, "application/json", string(body), []types.EventID{sourceEventID, task.ID}, s.conv); err != nil {
+		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("attach continuation Work seed: %w", err)
+	}
+	return s.GetContinuation(ctx, seed.ChainID)
+}
+
+func (s *FactoryV1WorkStore) GetContinuation(ctx context.Context, chainID string) (factoryv1.ContinuationWorkLink, error) {
+	if err := ctx.Err(); err != nil {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	type artifactRecord struct{ id, label, body string }
+	artifactsByTask := make(map[types.EventID][]artifactRecord)
+	if err := s.forEachWorkEvent(ctx, work.EventTypeTaskArtifact, func(item event.Event) error {
+		content, ok := item.Content().(work.TaskArtifactContent)
+		if ok {
+			artifactsByTask[content.TaskID] = append(artifactsByTask[content.TaskID], artifactRecord{id: item.ID().Value(), label: content.Label, body: content.Body})
+		}
+		return nil
+	}); err != nil {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	var found *factoryv1.ContinuationWorkLink
+	if err := s.forEachWorkEvent(ctx, work.EventTypeTaskCreated, func(item event.Event) error {
+		if _, ok := item.Content().(work.TaskCreatedContent); !ok {
+			return nil
+		}
+		var seed *factoryV1ContinuationWorkSeed
+		var artifactID string
+		quarantined := false
+		for _, artifact := range artifactsByTask[item.ID()] {
+			switch artifact.label {
+			case factoryV1ContinuationSeedLabel:
+				var candidate factoryV1ContinuationWorkSeed
+				if err := json.Unmarshal([]byte(artifact.body), &candidate); err != nil {
+					return fmt.Errorf("decode continuation Work seed %s: %w", artifact.id, err)
+				}
+				if candidate.SchemaVersion != factoryv1.ContinuationSchemaVersion {
+					return fmt.Errorf("unsupported continuation Work schema %q", candidate.SchemaVersion)
+				}
+				if seed != nil && !reflect.DeepEqual(*seed, candidate) {
+					return errors.New("conflicting duplicate continuation Work seed")
+				}
+				copy := candidate
+				seed, artifactID = &copy, artifact.id
+			case factoryV1ContinuationQuarantineLabel:
+				quarantined = true
+			}
+		}
+		if seed == nil || seed.ChainID != chainID {
+			return nil
+		}
+		candidate := factoryv1.ContinuationWorkLink{
+			TaskID: item.ID().Value(), ArtifactID: artifactID, ChainID: seed.ChainID,
+			SourceChainHead: seed.SourceChainHead, TargetRepository: seed.TargetRepository,
+			SourceEventID: seed.SourceEventID, Quarantined: quarantined,
+		}
+		if found != nil && !reflect.DeepEqual(*found, candidate) {
+			return errors.New("conflicting continuation Work tasks")
+		}
+		found = &candidate
+		return nil
+	}); err != nil {
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	if found == nil {
+		return factoryv1.ContinuationWorkLink{}, factoryv1.ErrWorkNotFound
+	}
+	return *found, nil
+}
+
+func (s *FactoryV1WorkStore) AttachContinuationArtifact(ctx context.Context, artifact factoryv1.ContinuationWorkArtifact) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	link, err := s.GetContinuation(ctx, artifact.ChainID)
+	if err != nil {
+		return "", err
+	}
+	if link.Quarantined {
+		return "", errors.New("continuation Work task is quarantined")
+	}
+	taskID, err := types.NewEventID(link.TaskID)
+	if err != nil {
+		return "", err
+	}
+	if artifact.ArtifactID == "" {
+		artifact.ArtifactID = "work-continuation-record-" + factoryv1.HashText(artifact.ChainID + "\x00" + artifact.RecordID)[:24]
+	}
+	body, err := json.Marshal(artifact)
+	if err != nil {
+		return "", err
+	}
+	label := factoryV1ContinuationRecordPrefix + artifact.RecordID
+	artifacts, err := s.tasks.ListArtifacts(taskID)
+	if err != nil {
+		return "", err
+	}
+	for _, existing := range artifacts {
+		if existing.Label != label {
+			continue
+		}
+		if existing.Body != string(body) {
+			return "", factoryv1.ErrIdempotencyConflict
+		}
+		return existing.ID.Value(), nil
+	}
+	eventID, err := types.NewEventID(artifact.EventID)
+	if err != nil {
+		return "", fmt.Errorf("continuation EventGraph event id: %w", err)
+	}
+	if err := s.tasks.AddArtifact(s.actor, taskID, label, "application/json", string(body), []types.EventID{eventID}, s.conv); err != nil {
+		return "", err
+	}
+	return s.continuationArtifactID(taskID, label, string(body))
+}
+
+func (s *FactoryV1WorkStore) GetContinuationArtifact(ctx context.Context, chainID, recordID string) (factoryv1.ContinuationWorkArtifact, error) {
+	if err := ctx.Err(); err != nil {
+		return factoryv1.ContinuationWorkArtifact{}, err
+	}
+	link, err := s.GetContinuation(ctx, chainID)
+	if err != nil {
+		return factoryv1.ContinuationWorkArtifact{}, err
+	}
+	taskID, err := types.NewEventID(link.TaskID)
+	if err != nil {
+		return factoryv1.ContinuationWorkArtifact{}, err
+	}
+	label := factoryV1ContinuationRecordPrefix + recordID
+	artifacts, err := s.tasks.ListArtifacts(taskID)
+	if err != nil {
+		return factoryv1.ContinuationWorkArtifact{}, err
+	}
+	var found *factoryv1.ContinuationWorkArtifact
+	for _, artifact := range artifacts {
+		if artifact.Label != label {
+			continue
+		}
+		var candidate factoryv1.ContinuationWorkArtifact
+		if err := json.Unmarshal([]byte(artifact.Body), &candidate); err != nil {
+			return factoryv1.ContinuationWorkArtifact{}, err
+		}
+		if found != nil && !reflect.DeepEqual(*found, candidate) {
+			return factoryv1.ContinuationWorkArtifact{}, errors.New("conflicting continuation Work record artifacts")
+		}
+		copy := candidate
+		found = &copy
+	}
+	if found == nil {
+		return factoryv1.ContinuationWorkArtifact{}, factoryv1.ErrWorkNotFound
+	}
+	return *found, nil
+}
+
+func (s *FactoryV1WorkStore) QuarantineContinuation(ctx context.Context, chainID, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("continuation quarantine reason is required")
+	}
+	link, err := s.GetContinuation(ctx, chainID)
+	if err != nil {
+		return err
+	}
+	taskID, err := types.NewEventID(link.TaskID)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(factoryV1ContinuationWorkQuarantine{SchemaVersion: factoryv1.ContinuationSchemaVersion, ChainID: chainID, Reason: reason})
+	if err != nil {
+		return err
+	}
+	artifacts, err := s.tasks.ListArtifacts(taskID)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range artifacts {
+		if artifact.Label == factoryV1ContinuationQuarantineLabel {
+			if artifact.Body != string(body) {
+				return factoryv1.ErrIdempotencyConflict
+			}
+			return nil
+		}
+	}
+	causes, err := s.headCauses()
+	if err != nil {
+		return err
+	}
+	return s.tasks.AddArtifact(s.actor, taskID, factoryV1ContinuationQuarantineLabel, "application/json", string(body), causes, s.conv)
+}
+
+func (s *FactoryV1WorkStore) continuationArtifactID(taskID types.EventID, label, body string) (string, error) {
+	artifacts, err := s.tasks.ListArtifacts(taskID)
+	if err != nil {
+		return "", err
+	}
+	for _, artifact := range artifacts {
+		if artifact.Label == label && artifact.Body == body {
+			return artifact.ID.Value(), nil
+		}
+	}
+	return "", errors.New("continuation Work artifact append was not observable")
 }
 
 func (s *FactoryV1WorkStore) headCauses() ([]types.EventID, error) {

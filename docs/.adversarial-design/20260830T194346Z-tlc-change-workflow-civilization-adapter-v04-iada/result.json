@@ -1,0 +1,22 @@
+{
+  "author_lineages": [
+    "openai",
+    "anthropic"
+  ],
+  "base_head": "138472d26708cc6277625210ad46ae9b12aee10c",
+  "blocker_count": 0,
+  "factory_order_blob": "e7097846d3a669495e36d8e81ae57038683c4550",
+  "findings": [],
+  "gate": "IADA",
+  "implementation_request_blob": "67d51c454ab7655f083626fb8becac40be218a4a",
+  "independent": false,
+  "major_count": 0,
+  "packet_blob": "1c8a643964ff2167e415944ccc08780fac6f1dfb",
+  "packet_id": "HIVE-TLC-CHANGE-WORKFLOW-CIVILIZATION-ADAPTER",
+  "packet_path": "docs/designs/tlc-change-workflow-civilization-adapter-v0.4.0.md",
+  "packet_sha256": "5871c4ca0739b9860b6d04e7966710f0636f0df18b29d6ba9923a3a45962b0cb",
+  "packet_version": "0.4.0",
+  "ready_for_cfada": true,
+  "repo": "transpara-ai/hive",
+  "result": "pass"
+}

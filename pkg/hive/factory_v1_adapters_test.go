@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/transpara-ai/eventgraph/go/pkg/event"
 	"github.com/transpara-ai/eventgraph/go/pkg/store"
@@ -59,6 +60,57 @@ func TestFactoryV1EventGraphAppendRetriesConcurrentHeadRace(t *testing.T) {
 	}
 	if first.ID == "" || second.ID != first.ID {
 		t.Fatalf("retry/replay identities = (%q,%q)", first.ID, second.ID)
+	}
+}
+
+func TestFactoryV1ContinuationAdaptersPersistAndReadBackTwins(t *testing.T) {
+	ctx := context.Background()
+	eventStore, factory, signer, actor, conversation := newDecisionTestStore(t)
+	workpkg.RegisterWithRegistry(factory.Registry)
+	graph, err := NewFactoryV1EventGraphStore(eventStore, factory, signer, actor, conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workStore, err := NewFactoryV1WorkStore(eventStore, factory, signer, actor, conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := factoryv1.Principal{Kind: "human", StableID: actor.Value(), SubjectRef: actor.Value()}
+	authentication := factoryv1.Authentication{Status: "authenticated", Method: "eventgraph_actor", Reference: actor.Value(), AuthenticatedBy: "hive"}
+	source, err := factoryv1.NewInlineSourceRecord(
+		"adapter-continuation-1", "human_request", 0, nil, principal, authentication,
+		"text/plain", "evaluate the exact change", "hive", time.Date(2026, 8, 30, 13, 0, 0, 0, time.UTC), nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := factoryv1.NewContinuationRecord(
+		factoryv1.ContinuationRecordSource, source.ChainID, source.RecordDigest, source.RecordDigest,
+		nil, principal, "hive", time.Date(2026, 8, 30, 13, 0, 1, 0, time.UTC), source,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := factoryv1.RepositoryIdentity{Provider: "github", NumericID: 101, OwnerName: "transpara-ai/hive"}
+	eventRecord, complete, err := factoryv1.SeedContinuationSource(ctx, graph, workStore, repository, envelope)
+	if err != nil || !complete {
+		t.Fatalf("seed continuation: complete=%v err=%v", complete, err)
+	}
+	link, err := workStore.GetContinuation(ctx, source.ChainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := workStore.GetContinuationArtifact(ctx, source.ChainID, envelope.RecordID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.SourceEventID != eventRecord.ID || artifact.EventID != eventRecord.ID || string(artifact.Payload) != string(envelope.Payload) {
+		t.Fatalf("continuation twins differ: link=%+v artifact=%+v event=%s", link, artifact, eventRecord.ID)
+	}
+
+	replayed, complete, err := factoryv1.SeedContinuationSource(ctx, graph, workStore, repository, envelope)
+	if err != nil || !complete || replayed.ID != eventRecord.ID {
+		t.Fatalf("continuation replay was not idempotent: event=%s complete=%v err=%v", replayed.ID, complete, err)
 	}
 }
 
