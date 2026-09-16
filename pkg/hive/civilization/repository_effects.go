@@ -35,6 +35,7 @@ type RepositorySpec struct {
 }
 
 type GitHubEffectsConfig struct {
+	Runner                        *RunnerProvider
 	Repositories                  map[string]RepositorySpec
 	WorktreeRoot                  string
 	GitExecutable                 string
@@ -88,6 +89,9 @@ var (
 const verificationSandboxProfile = "civilization-verification"
 
 func NewGitHubEffects(config GitHubEffectsConfig) (*GitHubEffects, error) {
+	if config.Runner != nil && config.PublishEnabled {
+		return nil, errors.New("runner mode does not authorize publication")
+	}
 	if len(config.Repositories) == 0 {
 		return nil, errors.New("at least one repository is required")
 	}

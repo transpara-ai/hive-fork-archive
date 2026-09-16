@@ -41,7 +41,13 @@ func (e *GitHubEffects) PreparedArtifact(ctx context.Context, workID string, bou
 	if err := check(); err != nil {
 		return Artifact{}, err
 	}
-	if err := e.verify(ctx, root, spec.VerificationCommands); err != nil {
+	var verification *RunnerEvidence
+	if e.config.Runner != nil {
+		verification, err = e.config.Runner.Verify(ctx, workID, bound.Source.Repository, root, workspace.BaseSHA)
+		if err != nil {
+			return Artifact{}, err
+		}
+	} else if err := e.verify(ctx, root, spec.VerificationCommands); err != nil {
 		return Artifact{}, err
 	}
 	patch, err := e.gitRun(ctx, root, "diff", "--no-ext-diff", "--no-textconv", "--binary", workspace.BaseSHA, "--")
@@ -87,5 +93,5 @@ func (e *GitHubEffects) PreparedArtifact(ctx context.Context, workID string, bou
 	if err := check(); err != nil {
 		return Artifact{}, err
 	}
-	return Artifact{Repository: bound.Source.Repository, Branch: workspace.Branch, BaseSHA: workspace.BaseSHA, WorkspaceDigest: digest, ChangedFiles: implementation.ChangedFiles, Patch: string(patch)}, nil
+	return Artifact{Verification: verification, Repository: bound.Source.Repository, Branch: workspace.Branch, BaseSHA: workspace.BaseSHA, WorkspaceDigest: digest, ChangedFiles: implementation.ChangedFiles, Patch: string(patch)}, nil
 }

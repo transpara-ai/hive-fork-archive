@@ -137,7 +137,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	runner, err := configuredRunner()
+	if err != nil {
+		return err
+	}
 	effects, err := civilization.NewGitHubEffects(civilization.GitHubEffectsConfig{
+		Runner:       runner,
 		Repositories: repositories, WorktreeRoot: requiredEnvValue("CIVILIZATION_WORKTREE_DIR"),
 		GitExecutable: requiredEnvValue("CIVILIZATION_GIT_PATH"), GitSHA256: requiredEnvValue("CIVILIZATION_GIT_SHA256"),
 		GitHubExecutable: requiredEnvValue("CIVILIZATION_GH_PATH"), GitHubSHA256: requiredEnvValue("CIVILIZATION_GH_SHA256"),

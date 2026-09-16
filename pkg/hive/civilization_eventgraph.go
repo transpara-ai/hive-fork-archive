@@ -17,6 +17,7 @@ import (
 )
 
 var civilizationEventTypeByCore = map[civ.EventType]types.EventType{
+	civ.EventWorkerAssigned:        types.MustEventType(string(civ.EventWorkerAssigned)),
 	civ.EventIntakeAccepted:        types.MustEventType(string(civ.EventIntakeAccepted)),
 	civ.EventTLCRouted:             types.MustEventType(string(civ.EventTLCRouted)),
 	civ.EventWorkAccepted:          types.MustEventType(string(civ.EventWorkAccepted)),

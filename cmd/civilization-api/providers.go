@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/transpara-ai/hive/pkg/hive/civilization"
@@ -11,6 +12,17 @@ import (
 
 func configuredProviders(codexPath, codexDigest string) (*civilization.ProviderRouter, error) {
 	router := &civilization.ProviderRouter{DefaultProvider: envOr("CIVILIZATION_PROVIDER", "codex"), Hosts: map[string]civilization.ProviderHost{}}
+	if endpoint := requiredEnvValue("CIVILIZATION_RUNNER_URL"); endpoint != "" {
+		provider, err := configuredRunner()
+		if err != nil {
+			return nil, err
+		}
+		router.Hosts["codex"] = civilization.ProviderHost{Provider: provider, DefaultModel: requiredEnvValue("CIVILIZATION_CODEX_MODEL")}
+		if _, err := router.Resolve(civilization.ExecutionSelection{}); err != nil {
+			return nil, err
+		}
+		return router, nil
+	}
 	receiptDir := requiredEnvValue("CIVILIZATION_RECEIPT_DIR")
 	if receiptDir == "" {
 		return nil, fmt.Errorf("CIVILIZATION_RECEIPT_DIR is required")
@@ -47,4 +59,16 @@ func configuredProviders(codexPath, codexDigest string) (*civilization.ProviderR
 		return nil, err
 	}
 	return router, nil
+}
+
+func configuredRunner() (*civilization.RunnerProvider, error) {
+	endpoint := requiredEnvValue("CIVILIZATION_RUNNER_URL")
+	if endpoint == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(requiredEnvValue("CIVILIZATION_RUNNER_TOKEN_FILE"))
+	if err != nil {
+		return nil, fmt.Errorf("read runner credential: %w", err)
+	}
+	return civilization.NewRunnerProvider(endpoint, strings.TrimSpace(string(raw)))
 }

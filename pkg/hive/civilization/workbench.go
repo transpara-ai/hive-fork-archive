@@ -34,15 +34,20 @@ func (e *Engine) Confirm(ctx context.Context, workID, briefID string) (WorkProje
 }
 
 type Artifact struct {
-	Repository      string   `json:"repository"`
-	Branch          string   `json:"branch"`
-	BaseSHA         string   `json:"base_sha"`
-	WorkspaceDigest string   `json:"workspace_digest"`
-	ChangedFiles    []string `json:"changed_files"`
-	Patch           string   `json:"patch"`
+	Verification    *RunnerEvidence `json:"verification,omitempty"`
+	Repository      string          `json:"repository"`
+	Branch          string          `json:"branch"`
+	BaseSHA         string          `json:"base_sha"`
+	WorkspaceDigest string          `json:"workspace_digest"`
+	ChangedFiles    []string        `json:"changed_files"`
+	Patch           string          `json:"patch"`
 }
 
 func (e *Engine) recordProviderFailure(ctx context.Context, workID string, operation ProviderOperation, attempt string, result ProviderResult, failure error) (WorkProjection, error) {
+	if errors.Is(failure, ErrRunnerPending) || errors.Is(failure, context.Canceled) {
+		item, _ := e.mustFind(ctx, workID)
+		return item, failure
+	}
 	result.Status, result.Summary = "blocked", "The selected host could not complete this invocation."
 	result.Blocker, result.NextAction = failure.Error(), "Repair the selected host or model, then record the repair and retry."
 	result.ChangedFiles, result.Checks = []string{}, []CheckResult{}
