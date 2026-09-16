@@ -14,6 +14,7 @@ import (
 )
 
 type HTTPConfig struct {
+	Readiness            func(context.Context) error
 	RequireHumanIdentity bool
 	Engine               *Engine
 	APIKey               string
@@ -21,6 +22,7 @@ type HTTPConfig struct {
 }
 
 type HTTPHandler struct {
+	readiness            func(context.Context) error
 	requireHumanIdentity bool
 	engine               *Engine
 	apiKey               string
@@ -40,6 +42,7 @@ func NewHTTPHandler(config HTTPConfig) (*HTTPHandler, error) {
 	}
 	handler := &HTTPHandler{engine: config.Engine, apiKey: config.APIKey, maxBodyBytes: config.MaxBodyBytes, mux: http.NewServeMux()}
 	handler.requireHumanIdentity = config.RequireHumanIdentity
+	handler.readiness = config.Readiness
 	handler.mux.HandleFunc("GET /healthz", handler.health)
 	handler.mux.HandleFunc("GET /readyz", handler.ready)
 	handler.mux.HandleFunc("GET /api/civilization/v1/work", handler.list)
@@ -87,6 +90,12 @@ func (h *HTTPHandler) health(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *HTTPHandler) ready(response http.ResponseWriter, request *http.Request) {
+	if h.readiness != nil {
+		if err := h.readiness(request.Context()); err != nil {
+			writeAPIError(response, http.StatusServiceUnavailable, "worker runner unavailable")
+			return
+		}
+	}
 	if _, err := h.engine.List(request.Context()); err != nil {
 		writeAPIError(response, http.StatusServiceUnavailable, "event store unavailable")
 		return

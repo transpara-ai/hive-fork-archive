@@ -86,3 +86,36 @@ func apiRequest(t *testing.T, handler http.Handler, method, path string, body []
 	handler.ServeHTTP(response, request)
 	return response
 }
+
+func TestRunnerReadinessFailureKeepsWorkInspectable(t *testing.T) {
+	engine, _, _ := newTestEngine(t, "Routine", false)
+	available := false
+	handler, err := NewHTTPHandler(HTTPConfig{Engine: engine, APIKey: "test-secret", Readiness: func(context.Context) error {
+		if !available {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/readyz", "/healthz", "/api/civilization/v1/work"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer test-secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		expected := http.StatusOK
+		if path == "/readyz" {
+			expected = http.StatusServiceUnavailable
+		}
+		if response.Code != expected {
+			t.Fatalf("%s: got %d want %d", path, response.Code, expected)
+		}
+	}
+	available = true
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatal("readiness did not recover")
+	}
+}

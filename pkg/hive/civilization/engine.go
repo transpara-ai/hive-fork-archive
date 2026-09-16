@@ -264,19 +264,20 @@ func (e *Engine) Route(ctx context.Context, workID string) (WorkProjection, erro
 	if err != nil {
 		return e.block(ctx, workID, "Repository is unavailable: "+err.Error(), "Repair the repository mapping and retry.")
 	}
-	attempt := e.nextProviderAttempt(ctx, workID, OperationRoute)
+	attempt, err := e.assignWorker(ctx, workID, OperationRoute)
+	if err != nil {
+		return projection, err
+	}
 	result, err := e.provider.Run(ctx, ProviderRequest{
 		Selection: projection.Selection,
+		WorkID:    workID, Repository: projection.Source.Repository,
 		Operation: OperationRoute, AttemptID: attempt, RepositoryRoot: root,
 		Prompt: e.routingContext + "\n" + routePrompt(projection.Source, projection.IntakeText, resolvedHumanGuidance(projection)),
 	})
 	if err != nil {
 		return e.recordProviderFailure(ctx, workID, OperationRoute, attempt, result, err)
 	}
-	providerEvent, err := appendEvent(ctx, e.store, EventProviderResult, workID,
-		"provider:"+attempt, []string{projection.LatestEventID}, ProviderRecord{
-			Operation: OperationRoute, AttemptID: attempt, Result: result,
-		})
+	providerEvent, err := e.recordProviderAttempt(ctx, workID, OperationRoute, attempt, result, "")
 	if err != nil {
 		return WorkProjection{}, err
 	}
@@ -383,9 +384,13 @@ func (e *Engine) Run(ctx context.Context, workID string) (WorkProjection, error)
 				return WorkProjection{}, err
 			}
 		}
-		attempt := e.nextProviderAttempt(ctx, workID, OperationImplement)
+		attempt, assignErr := e.assignWorker(ctx, workID, OperationImplement)
+		if assignErr != nil {
+			return projection, assignErr
+		}
 		implementation, err = e.provider.Run(ctx, ProviderRequest{
 			Selection: projection.Selection,
+			WorkID:    workID, Repository: bound.Source.Repository, BaseSHA: workspace.BaseSHA,
 			Operation: OperationImplement, AttemptID: attempt, RepositoryRoot: workspace.Root,
 			Prompt: implementationPrompt(bound, implementationGuidance(projection)+"\n"+revisionContext),
 		})
@@ -428,22 +433,26 @@ func (e *Engine) Run(ctx context.Context, workID string) (WorkProjection, error)
 	}
 
 	review, hasReview := latestPassingProviderResult(projection, OperationReview)
-	if projection.State != StatePublishing || !hasReview {
+	if !hasReview || !reviewMatchesImplementation(projection, implementationDigest) {
 		if projection.State != StateReviewing {
 			if _, err := e.transition(ctx, projection, StateReviewing, "The selected host is performing ordinary review.", "Wait for review."); err != nil {
 				return WorkProjection{}, err
 			}
 		}
-		attempt := e.nextProviderAttempt(ctx, workID, OperationReview)
+		attempt, assignErr := e.assignWorker(ctx, workID, OperationReview)
+		if assignErr != nil {
+			return projection, assignErr
+		}
 		review, err = e.provider.Run(ctx, ProviderRequest{
 			Selection: projection.Selection,
+			WorkID:    workID, Repository: bound.Source.Repository, BaseSHA: workspace.BaseSHA,
 			Operation: OperationReview, AttemptID: attempt, RepositoryRoot: workspace.Root,
 			Prompt: reviewPrompt(bound, implementation, resolvedHumanGuidance(projection)),
 		})
 		if err != nil {
 			return e.recordProviderFailure(ctx, workID, OperationReview, attempt, review, err)
 		}
-		_, recordErr := e.recordProviderAttempt(ctx, workID, OperationReview, attempt, review, "")
+		_, recordErr := e.recordProviderAttempt(ctx, workID, OperationReview, attempt, review, implementationDigest)
 		if recordErr != nil {
 			return WorkProjection{}, recordErr
 		}
@@ -462,8 +471,16 @@ func (e *Engine) Run(ctx context.Context, workID string) (WorkProjection, error)
 		projection, _ = e.mustFind(ctx, workID)
 	}
 	if preparer, ok := e.effects.(PreparedEffects); ok && !preparer.PublicationEnabled() {
-		artifact, err := preparer.PreparedArtifact(ctx, workID, bound, workspace, implementation, implementationDigest)
+		verificationAttempt, assignErr := e.assignWorker(ctx, workID, ProviderOperation("verify"))
+		if assignErr != nil {
+			return projection, assignErr
+		}
+		verifyCtx := context.WithValue(ctx, runnerVerificationAttemptKey{}, verificationAttempt)
+		artifact, err := preparer.PreparedArtifact(verifyCtx, workID, bound, workspace, implementation, implementationDigest)
 		if err != nil {
+			if errors.Is(err, ErrRunnerPending) || errors.Is(err, context.Canceled) {
+				return projection, err
+			}
 			return e.block(ctx, workID, "Independent verification failed: "+err.Error(), "Repair the failed checks or worktree, then retry.")
 		}
 		projection, err = e.mustFind(ctx, workID)
@@ -644,7 +661,11 @@ func (e *Engine) completeMerged(ctx context.Context, workID, cause string, pullR
 
 func (e *Engine) nextProviderAttempt(ctx context.Context, workID string, operation ProviderOperation) string {
 	projection, _, _ := e.find(ctx, workID)
-	return providerAttemptID(workID, operation, len(projection.ProviderRuns)+1)
+	generation := len(projection.ProviderRuns) + 1
+	if operation == "verify" {
+		generation += len(projection.Interventions)
+	}
+	return providerAttemptID(workID, operation, generation)
 }
 
 func (e *Engine) recordProviderAttempt(ctx context.Context, workID string, operation ProviderOperation, attempt string, result ProviderResult, workspaceDigest string) (Event, error) {
@@ -1087,11 +1108,11 @@ func providerAttemptID(workID string, operation ProviderOperation, ordinal int) 
 }
 
 func routePrompt(source tlcbridge.Source, text, guidance string) string {
-	return fmt.Sprintf("Use the installed $tlc skill to route this source and prepare its short brief. This invocation is ONLY the routing phase: do not implement the request, write files, or run its verification commands. The read-only sandbox is intentional; Hive starts implementation in a separate writable worktree after brief confirmation. Return passed when the brief is ready. Return only the required structured result, with the complete tlc-envelope/v1 object encoded as a JSON string in tlc_envelope. Source kind: %s. Source identity: %s. Repository: %s. Outcome to describe in the brief (not execute now):\n%s%s", source.Kind, source.Identity, source.Repository, text, promptGuidance(guidance))
+	return fmt.Sprintf("Use the installed $tlc skill to route this source and prepare its short brief. This invocation is ONLY the routing phase: do not implement the request, write files, or run its verification commands. The read-only sandbox is intentional; Hive starts implementation in a separate writable worktree after brief confirmation. Return passed when the brief is ready. Return only the required structured result, with the complete tlc-envelope/v1 object encoded as a JSON string in tlc_envelope. The brief fields scope, non_goals, assumptions, constraints, and tests MUST be JSON arrays of strings (use [] for an empty list); outcome and next_action MUST be strings. Do not encode those lists as prose strings. Source kind: %s. Source identity: %s. Repository: %s. Outcome to describe in the brief (not execute now):\n%s%s", source.Kind, source.Identity, source.Repository, text, promptGuidance(guidance))
 }
 
 func implementationPrompt(bound tlcbridge.BoundRequest, guidance string) string {
-	return fmt.Sprintf("Implement this accepted TLC brief in the current repository. Do not commit, push, open or modify a pull request, merge, change settings, use dangerous sandbox bypass, or deploy. Run relevant tests and report the exact changed files and results in the required structured response. TLC transport:\n%s%s", bound.CanonicalJSON, promptGuidance(guidance))
+	return fmt.Sprintf("Implement this accepted TLC brief in the current repository. Do not commit, push, open or modify a pull request, merge, change settings, use dangerous sandbox bypass, or deploy. Run relevant tests and report the exact changed files and results in the required structured response. Return null in tlc_envelope for this implementation operation. TLC transport:\n%s%s", bound.CanonicalJSON, promptGuidance(guidance))
 }
 
 func reviewPrompt(bound tlcbridge.BoundRequest, implementation ProviderResult, guidance string) string {
@@ -1100,7 +1121,7 @@ func reviewPrompt(bound tlcbridge.BoundRequest, implementation ProviderResult, g
 		ChangedFiles []string      `json:"changed_files"`
 		Checks       []CheckResult `json:"checks"`
 	}{implementation.Summary, implementation.ChangedFiles, implementation.Checks})
-	return fmt.Sprintf("Perform an ordinary final review of the current uncommitted implementation against this TLC brief. This invocation is read-only: inspect the diff and relevant source; do not edit files, perform external effects, or rerun commands that require temporary files or caches. Implementation-reported checks below are evidence to assess, not independent verification. Hive separately runs native verification against the same implementation in its verification sandbox before preparing or publishing a result. Report review-environment limitations honestly without treating the intentional read-only sandbox as an implementation defect. Return passed only with no unresolved implementation findings. TLC transport:\n%s\nImplementation-reported evidence:\n%s%s", bound.CanonicalJSON, reported, promptGuidance(guidance))
+	return fmt.Sprintf("Perform an ordinary final review of the current uncommitted implementation against this TLC brief. This invocation is read-only: inspect the diff and relevant source; do not edit files, perform external effects, or rerun commands that require temporary files or caches. Implementation-reported checks below are evidence to assess, not independent verification. Hive separately runs native verification against the same implementation in its verification sandbox before preparing or publishing a result. Report review-environment limitations honestly without treating the intentional read-only sandbox as an implementation defect. Return passed only with no unresolved implementation findings. Return null in tlc_envelope for this review operation. TLC transport:\n%s\nImplementation-reported evidence:\n%s%s", bound.CanonicalJSON, reported, promptGuidance(guidance))
 }
 
 func resolvedHumanGuidance(projection WorkProjection) string {
@@ -1153,4 +1174,38 @@ func reviewFailureSummary(result ProviderResult, validationErr error) string {
 		parts = append(parts, result.Review.Findings...)
 	}
 	return strings.Join(parts, " ")
+}
+
+// Assignment precedes execution and is durable across API restarts. Recovery
+// reuses the assignment until a provider result ends that numbered attempt.
+func (e *Engine) assignWorker(ctx context.Context, workID string, operation ProviderOperation) (string, error) {
+	attempt := e.nextProviderAttempt(ctx, workID, operation)
+	events, err := e.store.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, event := range events {
+		if event.WorkID == workID && event.IdempotencyKey == "worker:"+attempt {
+			return attempt, nil
+		}
+	}
+	projection, err := e.mustFind(ctx, workID)
+	if err != nil {
+		return "", err
+	}
+	_, err = appendEvent(ctx, e.store, EventWorkerAssigned, workID, "worker:"+attempt, []string{projection.LatestEventID}, map[string]string{"attempt_id": attempt, "operation": string(operation), "repository": projection.Source.Repository})
+	return attempt, err
+}
+
+func reviewMatchesImplementation(projection WorkProjection, digest string) bool {
+	for i := len(projection.ProviderRuns) - 1; i >= 0; i-- {
+		record := projection.ProviderRuns[i]
+		if record.Operation == OperationImplement {
+			return false
+		}
+		if record.Operation == OperationReview {
+			return record.WorkspaceDigest == digest && record.Result.Status == "passed"
+		}
+	}
+	return false
 }

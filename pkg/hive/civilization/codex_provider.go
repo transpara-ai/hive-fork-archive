@@ -27,6 +27,9 @@ const (
 )
 
 type ProviderRequest struct {
+	WorkID         string
+	Repository     string
+	BaseSHA        string
 	Selection      ExecutionSelection
 	Operation      ProviderOperation
 	AttemptID      string
@@ -49,6 +52,7 @@ type ReviewResult struct {
 // ProviderResult is the small machine result returned by every provider. A
 // route operation carries the complete TLC transport document in TLCEnvelope.
 type ProviderResult struct {
+	Runner       *RunnerEvidence    `json:"runner,omitempty"`
 	Execution    *ExecutionEvidence `json:"execution,omitempty"`
 	Status       string             `json:"status"`
 	Summary      string             `json:"summary"`
@@ -502,7 +506,7 @@ var providerResultSchema = []byte(`{
   "properties":{
     "status":{"enum":["passed","blocked"]},
     "summary":{"type":"string","minLength":1},
-    "tlc_envelope":{"type":["string","null"],"description":"For route only: JSON text encoding the complete tlc-envelope/v1 object with schema_version, workflow (name and version), route, and brief (outcome, scope, non_goals, assumptions, constraints, tests, next_action). Preserve additional workflow fields. For other operations return null."},
+    "tlc_envelope":{"type":["string","null"],"description":"For route only: JSON text encoding the complete tlc-envelope/v1 object with schema_version, workflow (name and version), route, and brief (outcome, scope, non_goals, assumptions, constraints, tests, next_action). brief.scope, brief.non_goals, brief.assumptions, brief.constraints, and brief.tests are arrays of strings, including empty arrays. brief.outcome and brief.next_action are strings. Preserve additional workflow fields. For other operations return null."},
     "changed_files":{"type":"array","items":{"type":"string"}},
     "checks":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","status","summary"],"properties":{"name":{"type":"string"},"status":{"type":"string"},"summary":{"type":"string"}}}},
     "review":{"type":["object","null"],"additionalProperties":false,"required":["status","summary","findings"],"properties":{"status":{"type":"string"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}}},
