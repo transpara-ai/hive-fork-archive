@@ -287,3 +287,17 @@ func classifyRunnerError(status int, err error) error {
 	}
 	return err
 }
+
+// Check keeps readiness truthful without blocking read-only work inspection.
+func (p *RunnerProvider) Check(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, status, err := p.exchange(ctx, "GET", "/healthz", nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return errors.New("runner is unavailable")
+	}
+	return nil
+}
