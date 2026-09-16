@@ -101,13 +101,12 @@ func run() (*civilization.ProviderResult, error) {
 		}
 		return &civilization.ProviderResult{Status: "passed", Summary: "Isolated verification passed.", Checks: checks, ChangedFiles: []string{}}, nil
 	}
-	// Bootstrap only the provider credential into an ephemeral private home.
-	auth, err := os.ReadFile("/run/secrets/codex_auth")
-	if err != nil {
-		return nil, fmt.Errorf("provider credential unavailable")
-	}
-	if err = os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), auth, 0600); err != nil {
-		return nil, err
+	// Platform mounts a dedicated CODEX_HOME authenticated natively on the
+	// runner host. Codex owns its login and refresh lifecycle; this worker never
+	// copies or promotes tokens between environments.
+	auth, err := os.Lstat(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"))
+	if err != nil || !auth.Mode().IsRegular() {
+		return nil, fmt.Errorf("native provider login unavailable")
 	}
 	requirements := "/etc/codex/requirements.toml"
 	executable := "/usr/local/bin/codex"
