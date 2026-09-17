@@ -4054,6 +4054,11 @@ func TestBuildOperatorProjectionIncludesStaticModelSelection(t *testing.T) {
 	if models.LoadedAt.IsZero() {
 		t.Fatal("model catalog loaded_at is zero")
 	}
+	for _, tier := range []modelconfig.ModelTier{modelconfig.TierJudgment, modelconfig.TierExecution, modelconfig.TierVolume} {
+		if models.TierDefaults[string(tier)] == "" {
+			t.Fatalf("tier default %q is not projected: %+v", tier, models.TierDefaults)
+		}
+	}
 	if len(models.Models) == 0 {
 		t.Fatal("expected projected model catalog entries")
 	}

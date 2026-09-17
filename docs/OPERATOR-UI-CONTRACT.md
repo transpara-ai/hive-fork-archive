@@ -234,6 +234,11 @@ POST /api/hive/approvals/{id}/resolve
   "model_selection": {
     "source": "hive",
     "catalog_source": "embedded-defaults",
+    "tier_defaults": {
+      "judgment": "gpt-6-astra",
+      "execution": "claude-fable-5-1",
+      "volume": "gpt-5.6-sol"
+    },
     "loaded_at": "2026-06-09T09:00:00Z",
     "reload_mode": "startup-static|hot-reload",
     "hot_reload": false,
@@ -284,6 +289,7 @@ Site may render this data, but Hive remains the source of truth.
 
 The projection includes:
 
+- Resolved `tier_defaults`, mapping each routing tier to the model the active catalog selects.
 - Model catalog entries with provider, auth mode, tier, capabilities, context window, output-token limit, and pricing metadata.
 - Starter civic-role assignments after Hive applies existing `modelconfig.Resolver` policy, defaults, and `CanOperate` constraints.
 - Catalog load metadata: `catalog_source`, `loaded_at`, `reload_mode`, `hot_reload`, and `last_reload_at` when a reload has occurred.
