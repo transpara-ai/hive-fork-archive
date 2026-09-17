@@ -202,6 +202,7 @@ func (m *OperatorModelSelectionManager) recordReloadError(now time.Time, err err
 type OperatorModelSelection struct {
 	Source        string                        `json:"source"`
 	CatalogSource string                        `json:"catalog_source"`
+	TierDefaults  map[string]string             `json:"tier_defaults"`
 	LoadedAt      time.Time                     `json:"loaded_at"`
 	ReloadMode    string                        `json:"reload_mode"`
 	HotReload     bool                          `json:"hot_reload"`
@@ -266,9 +267,13 @@ func BuildOperatorModelSelection(config OperatorModelSelectionConfig) OperatorMo
 	projection := OperatorModelSelection{
 		Source:        "hive",
 		CatalogSource: config.CatalogSource,
+		TierDefaults:  make(map[string]string),
 		LoadedAt:      config.LoadedAt,
 		ReloadMode:    config.ReloadMode,
 		HotReload:     config.HotReload,
+	}
+	for tier, model := range config.Resolver.Defaults().TierModels {
+		projection.TierDefaults[string(tier)] = model
 	}
 	if !config.LastReloadAt.IsZero() {
 		lastReloadAt := config.LastReloadAt
