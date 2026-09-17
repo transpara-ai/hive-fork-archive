@@ -74,6 +74,26 @@ tier_defaults:
 	return path
 }
 
+func TestResolveSiteOpsAPIKey(t *testing.T) {
+	tests := []struct {
+		name         string
+		siteOpsKey   string
+		transparaKey string
+		want         string
+	}{
+		{name: "dedicated credential wins", siteOpsKey: "site-ops", transparaKey: "webhook", want: "site-ops"},
+		{name: "legacy credential remains compatible", transparaKey: "legacy", want: "legacy"},
+		{name: "no credential", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveSiteOpsAPIKey(tt.siteOpsKey, tt.transparaKey); got != tt.want {
+				t.Fatalf("resolveSiteOpsAPIKey() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildCouncilResolver_CatalogPrecedence(t *testing.T) {
 	tests := []struct {
 		name           string
