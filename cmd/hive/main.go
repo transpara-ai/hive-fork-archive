@@ -1296,6 +1296,7 @@ func runLegacy(humanName, idea, dsn string, approveRequests, approveRoles bool, 
 	}
 
 	apiKey := os.Getenv("TRANSPARA_API_KEY")
+	siteOpsAPIKey := resolveSiteOpsAPIKey(os.Getenv("HIVE_SITE_OPS_API_KEY"), apiKey)
 	var siteClient *api.Client
 	if apiKey != "" {
 		siteClient = api.New(apiBase, apiKey)
@@ -1364,17 +1365,17 @@ func runLegacy(humanName, idea, dsn string, approveRequests, approveRoles bool, 
 	// path (site restart, network partition, hive downtime) and replays
 	// them through the same dispatcher. Requires postgres + an API key —
 	// otherwise the ticker can't store a watermark or talk to the site.
-	if pool != nil && apiKey != "" && space != "" {
+	if pool != nil && siteOpsAPIKey != "" && space != "" {
 		if err := reconciliation.EnsureTables(ctx, pool); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: reconciliation tables: %v (continuing without reconciliation)\n", err)
 		} else {
-			source := reconciliation.NewHTTPSource(apiBase, apiKey)
+			source := reconciliation.NewHTTPSource(apiBase, siteOpsAPIKey)
 			ticker := reconciliation.NewTicker(pool, rt, source, space)
 			go ticker.Start(ctx)
 			fmt.Fprintf(os.Stderr, "Reconciliation: polling %s/api/hive/site-ops for space=%s\n", apiBase, space)
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "Reconciliation: skipped (need --store, TRANSPARA_API_KEY, and --space)")
+		fmt.Fprintln(os.Stderr, "Reconciliation: skipped (need --store, HIVE_SITE_OPS_API_KEY or TRANSPARA_API_KEY, and --space)")
 	}
 
 	var scannerWG sync.WaitGroup
@@ -1403,6 +1404,16 @@ func runLegacy(humanName, idea, dsn string, approveRequests, approveRoles bool, 
 	count, _ := s.Count()
 	fmt.Fprintf(os.Stderr, "Events recorded: %d\n", count)
 	return nil
+}
+
+// resolveSiteOpsAPIKey keeps the reconciliation credential independent from
+// the inbound webhook credential. The fallback preserves existing deployments
+// that use TRANSPARA_API_KEY for both directions.
+func resolveSiteOpsAPIKey(siteOpsAPIKey, transparaAPIKey string) string {
+	if siteOpsAPIKey != "" {
+		return siteOpsAPIKey
+	}
+	return transparaAPIKey
 }
 
 // ─── Store helpers ───────────────────────────────────────────────────
