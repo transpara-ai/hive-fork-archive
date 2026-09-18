@@ -21,19 +21,42 @@ jobs:
         with:
           repository: transpara-ai/eventgraph
           path: eventgraph
+          # eventgraph is private; the default token cannot read another repository.
+          ssh-key: ${{ secrets.EVENTGRAPH_DEPLOY_KEY }}
       - uses: actions/checkout@v4
         with:
           repository: transpara-ai/agent
           path: agent
+          # agent is private; the default token cannot read another repository.
+          ssh-key: ${{ secrets.AGENT_DEPLOY_KEY }}
       - uses: actions/checkout@v4
         with:
           repository: transpara-ai/work
           path: work
+          # work is private; the default token cannot read another repository.
+          ssh-key: ${{ secrets.WORK_DEPLOY_KEY }}
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
           cache-dependency-path: hive/go.sum
+
+      # hive pins github.com/transpara-ai/eventgraph/go by version (no replace directive), so Go
+      # fetches it over the network. eventgraph is private: bypass the public module proxy and
+      # checksum database for transpara-ai modules and fetch over SSH with the read-only deploy key.
+      - name: Configure access to private transpara-ai Go modules
+        env:
+          EVENTGRAPH_DEPLOY_KEY: ${{ secrets.EVENTGRAPH_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EVENTGRAPH_DEPLOY_KEY" > ~/.ssh/eventgraph_deploy_key
+          chmod 600 ~/.ssh/eventgraph_deploy_key
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          git config --global url."git@github.com:transpara-ai/eventgraph".insteadOf "https://github.com/transpara-ai/eventgraph"
+          git config --global core.sshCommand "ssh -i ~/.ssh/eventgraph_deploy_key -o IdentitiesOnly=yes"
+          echo "GOPRIVATE=github.com/transpara-ai/*" >> "$GITHUB_ENV"
+          # Fail here, clearly, if the deploy key stops working.
+          git ls-remote --exit-code https://github.com/transpara-ai/eventgraph HEAD > /dev/null
 
       - run: go build ./...
         working-directory: hive
