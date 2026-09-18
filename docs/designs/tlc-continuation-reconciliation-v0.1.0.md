@@ -1,8 +1,11 @@
 # TLC continuation reconciliation
 
-**Version:** v0.1.0  
-**Date:** 2026-09-18  
-**Issue:** `transpara-ai/hive#326`  
+**Version:** v0.1.0
+
+**Date:** 2026-09-18
+
+**Issue:** `transpara-ai/hive#326`
+
 **Historical snapshot:** `transpara-ai/hive#327` at
 `5ea94c9637d0dd3cb3c4be46cc4218b463c574ab`
 
