@@ -106,7 +106,7 @@ import (
 
 func cmdFactory(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: hive factory <daemon|order|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr> [flags]", errUsage)
+		return fmt.Errorf("%w: hive factory <daemon|order|tlc-change-workflow|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr> [flags]", errUsage)
 	}
 	subverb := args[0]
 	rest := args[1:]
@@ -115,6 +115,8 @@ func cmdFactory(args []string) error {
 		return cmdFactoryDaemon(rest)
 	case "order":
 		return cmdFactoryOrder(rest)
+	case "tlc-change-workflow":
+		return cmdFactoryTLCChangeWorkflow(rest)
 	case "preflight-hive-unit":
 		return cmdFactoryPreflightHiveUnit(rest)
 	case "scan-issues":
@@ -160,11 +162,11 @@ func cmdFactory(args []string) error {
 	case "create-pr":
 		return cmdFactoryCreatePR(rest)
 	case "-h", "--help":
-		fmt.Println("usage: hive factory <daemon|order|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr> [flags]")
+		fmt.Println("usage: hive factory <daemon|order|tlc-change-workflow|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr> [flags]")
 		fmt.Println("\nRun 'hive factory <sub> --help' for subcommand flags.")
 		return nil
 	default:
-		return fmt.Errorf("unknown factory subverb %q (want daemon|order|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr)", subverb)
+		return fmt.Errorf("unknown factory subverb %q (want daemon|order|tlc-change-workflow|preflight-hive-unit|scan-issues|canary-scan|progress-issue-scan|advance-issue-scan|record-issue-scan-role-output|run-issue-scan-stage-role-output|run-issue-scan-implementation|record-issue-scan-review|run-issue-scan-review|run-issue-scan-blocker-repair|record-issue-scan-draft-pr|record-issue-scan-ready-pr|run-issue-scan-ready-pr|issue-scan-runner-contracts|issue-scan-runner-contexts|request-issue-scan-pr|create-issue-scan-draft-pr|complete-issue-scan-stage|validate-issue-scan-runner-suite|request-pr|create-pr)", subverb)
 	}
 }
 
@@ -1259,7 +1261,7 @@ func gitFetchBaseRef(ctx context.Context, repoPath, baseRef string) error {
 	if err := validateGitBaseBranchRef(base); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--quiet", "origin", base+":refs/remotes/origin/"+base)
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--quiet", "origin", "refs/heads/"+base+":refs/remotes/origin/"+base)
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {

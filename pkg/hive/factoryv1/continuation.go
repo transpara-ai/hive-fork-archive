@@ -30,12 +30,15 @@ const (
 // plugin runner. A configured expectation and an observed identity must match
 // exactly before Hive submits source bytes.
 type TLCWorkflowIdentity struct {
-	PluginName      string `json:"plugin_name"`
-	PluginVersion   string `json:"plugin_version"`
-	SkillName       string `json:"skill_name"`
-	ContractVersion string `json:"contract_version"`
-	SchemaSHA256    string `json:"schema_sha256"`
-	SkillSHA256     string `json:"skill_sha256"`
+	PluginName         string `json:"plugin_name"`
+	PluginVersion      string `json:"plugin_version"`
+	SkillName          string `json:"skill_name"`
+	ContractVersion    string `json:"contract_version"`
+	SchemaSHA256       string `json:"schema_sha256"`
+	SkillSHA256        string `json:"skill_sha256"`
+	ContractCoreSHA256 string `json:"contract_core_sha256"`
+	RunnerSHA256       string `json:"runner_sha256"`
+	RunnerArgvSHA256   string `json:"runner_argv_sha256"`
 }
 
 // TLCChangeWorkflowRunner adapts an installed skill invocation. Hive owns the
@@ -257,6 +260,24 @@ func NewInvocationIntent(selection CollaborationSelection, operationID string) (
 	}
 	if strings.TrimSpace(operationID) == "" {
 		return InvocationIntent{}, errors.New("operation_id is required")
+	}
+	return withInvocationIntentDigest(intent)
+}
+
+// NewWorkflowInvocationIntent creates Hive's durable launch claim for one
+// exact installed TLC workflow evaluation. It is execution metadata, not a
+// Human collaboration selection and not TLC evidence or authority.
+func NewWorkflowInvocationIntent(sourceHead string) (InvocationIntent, error) {
+	if !hexPattern.MatchString(sourceHead) {
+		return InvocationIntent{}, errors.New("TLC workflow invocation requires an exact source head")
+	}
+	operationID := "tlc-change-workflow:" + sourceHead
+	intent := InvocationIntent{
+		IntentID:       "intent-tlc-" + HashText(operationID)[:32],
+		SelectionID:    "tlc-workflow-" + sourceHead[:32],
+		State:          "not_started",
+		OperationID:    operationID,
+		IdempotencyKey: HashText(TLCContinuationVersion + "\x00" + sourceHead),
 	}
 	return withInvocationIntentDigest(intent)
 }
@@ -532,35 +553,44 @@ func DecodeContinuationReport(data []byte, sourceHead string) (ContinuationRepor
 // the exact JSON bytes through once, and strictly validates the returned report.
 // It performs no fallback and preserves downstream failure as an error.
 func InvokeTLCChangeWorkflow(ctx context.Context, runner TLCChangeWorkflowRunner, expected TLCWorkflowIdentity, invocationJSON []byte) (ContinuationReport, error) {
+	report, _, err := InvokeTLCChangeWorkflowExact(ctx, runner, expected, invocationJSON)
+	return report, err
+}
+
+// InvokeTLCChangeWorkflowExact is the persistence-oriented form of the
+// boundary. It returns the runner's exact response bytes together with the
+// strictly decoded report so EventGraph can retain the subject that was
+// actually evaluated rather than a remarshal.
+func InvokeTLCChangeWorkflowExact(ctx context.Context, runner TLCChangeWorkflowRunner, expected TLCWorkflowIdentity, invocationJSON []byte) (ContinuationReport, []byte, error) {
 	if runner == nil {
-		return ContinuationReport{}, errors.New("TLC change workflow runner is required")
+		return ContinuationReport{}, nil, errors.New("TLC change workflow runner is required")
 	}
 	if err := validateTLCWorkflowIdentity(expected); err != nil {
-		return ContinuationReport{}, fmt.Errorf("configured TLC workflow identity: %w", err)
+		return ContinuationReport{}, nil, fmt.Errorf("configured TLC workflow identity: %w", err)
 	}
 	observed, err := runner.ObservedIdentity(ctx)
 	if err != nil {
-		return ContinuationReport{}, fmt.Errorf("read installed TLC workflow identity: %w", err)
+		return ContinuationReport{}, nil, fmt.Errorf("read installed TLC workflow identity: %w", err)
 	}
 	if err := validateTLCWorkflowIdentity(observed); err != nil {
-		return ContinuationReport{}, fmt.Errorf("observed TLC workflow identity: %w", err)
+		return ContinuationReport{}, nil, fmt.Errorf("observed TLC workflow identity: %w", err)
 	}
 	if observed != expected {
-		return ContinuationReport{}, errors.New("installed TLC workflow identity does not match the configured exact identity")
+		return ContinuationReport{}, nil, errors.New("installed TLC workflow identity does not match the configured exact identity")
 	}
 	invocation, err := DecodeContinuationInvocation(invocationJSON)
 	if err != nil {
-		return ContinuationReport{}, err
+		return ContinuationReport{}, nil, err
 	}
 	response, err := runner.Evaluate(ctx, append([]byte(nil), invocationJSON...))
 	if err != nil {
-		return ContinuationReport{}, fmt.Errorf("TLC change workflow failed: %w", err)
+		return ContinuationReport{}, nil, fmt.Errorf("TLC change workflow failed: %w", err)
 	}
 	report, err := DecodeContinuationReport(response, invocation.SourceChain.HeadDigest)
 	if err != nil {
-		return ContinuationReport{}, fmt.Errorf("invalid TLC change workflow response: %w", err)
+		return ContinuationReport{}, nil, fmt.Errorf("invalid TLC change workflow response: %w", err)
 	}
-	return report, nil
+	return report, append([]byte(nil), response...), nil
 }
 
 func validateTLCWorkflowIdentity(identity TLCWorkflowIdentity) error {
@@ -571,6 +601,9 @@ func validateTLCWorkflowIdentity(identity TLCWorkflowIdentity) error {
 	validateIdentifier("plugin_version", identity.PluginVersion, &fields)
 	validateDigest("schema_sha256", identity.SchemaSHA256, &fields)
 	validateDigest("skill_sha256", identity.SkillSHA256, &fields)
+	validateDigest("contract_core_sha256", identity.ContractCoreSHA256, &fields)
+	validateDigest("runner_sha256", identity.RunnerSHA256, &fields)
+	validateDigest("runner_argv_sha256", identity.RunnerArgvSHA256, &fields)
 	if len(fields) != 0 {
 		sort.Strings(fields)
 		return &ContinuationValidationError{Fields: fields}
@@ -740,6 +773,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateIdentifier(prefix+".requirement_id", result.RequirementID, &fields)
 		validateIdentifier(prefix+".attestation_id", result.AttestationID, &fields)
 		validatePrincipal(prefix+".author", result.Author, &fields)
+		copy := result
+		copy.ResultDigest = ""
+		validateCanonicalContractDigest(prefix+".result_digest", copy, result.ResultDigest, &fields)
 	}
 	for i, result := range invocation.CollaborationResults {
 		prefix := fmt.Sprintf("collaboration_results[%d]", i)
@@ -756,6 +792,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateDigest(prefix+".prompt_sha256", result.PromptSHA256, &fields)
 		validateDigest(prefix+".result_digest", result.ResultDigest, &fields)
 		validatePrincipal(prefix+".collaborator", result.Collaborator, &fields)
+		copy := result
+		copy.ResultDigest = ""
+		validateCanonicalContractDigest(prefix+".result_digest", copy, result.ResultDigest, &fields)
 	}
 	intentSelections := make(map[string]struct{}, len(invocation.InvocationIntents))
 	for i, intent := range invocation.InvocationIntents {
@@ -782,6 +821,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		for name, value := range map[string]string{"attestation_id": attestation.AttestationID, "requirement_id": attestation.RequirementID, "provider_id": attestation.ProviderID, "model": attestation.Model, "effort": attestation.Effort, "lineage": attestation.Lineage, "durable_reference": attestation.DurableReference} {
 			validateIdentifier(prefix+"."+name, value, &fields)
 		}
+		copy := attestation
+		copy.AttestationDigest = ""
+		validateCanonicalContractDigest(prefix+".attestation_digest", copy, attestation.AttestationDigest, &fields)
 	}
 	for i, candidate := range invocation.ArtifactCandidates {
 		prefix := fmt.Sprintf("artifact_candidates[%d]", i)
@@ -792,6 +834,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateDigest(prefix+".content_sha256", candidate.ContentSHA256, &fields)
 		validateIdentifier(prefix+".durable_reference", candidate.DurableReference, &fields)
 		validateDigest(prefix+".candidate_digest", candidate.CandidateDigest, &fields)
+		copy := candidate
+		copy.CandidateDigest = ""
+		validateCanonicalContractDigest(prefix+".candidate_digest", copy, candidate.CandidateDigest, &fields)
 	}
 	for i, review := range invocation.ReviewResults {
 		prefix := fmt.Sprintf("review_results[%d]", i)
@@ -807,6 +852,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		}
 		validateIdentifier(prefix+".durable_reference", review.DurableReference, &fields)
 		validateDigest(prefix+".record_digest", review.RecordDigest, &fields)
+		copy := review
+		copy.RecordDigest = ""
+		validateCanonicalContractDigest(prefix+".record_digest", copy, review.RecordDigest, &fields)
 	}
 	for i, observation := range invocation.RepositoryObservations {
 		prefix := fmt.Sprintf("repository_observations[%d]", i)
@@ -819,6 +867,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateIdentifier(prefix+".subject", observation.Subject, &fields)
 		validateIdentifier(prefix+".authenticated_by", observation.AuthenticatedBy, &fields)
 		validateDigest(prefix+".record_digest", observation.RecordDigest, &fields)
+		copy := observation
+		copy.RecordDigest = ""
+		validateCanonicalContractDigest(prefix+".record_digest", copy, observation.RecordDigest, &fields)
 	}
 	for i, candidate := range invocation.EvidenceCandidates {
 		prefix := fmt.Sprintf("evidence_candidates[%d]", i)
@@ -831,6 +882,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateUniqueIdentifiers(prefix+".prerequisite_ids", candidate.PrerequisiteIDs, false, &fields)
 		validateDigest(prefix+".subject_digest", candidate.SubjectDigest, &fields)
 		validateDigest(prefix+".record_digest", candidate.RecordDigest, &fields)
+		copy := candidate
+		copy.RecordDigest = ""
+		validateCanonicalContractDigest(prefix+".record_digest", copy, candidate.RecordDigest, &fields)
 	}
 	for i, authority := range invocation.AuthorityEvidence {
 		prefix := fmt.Sprintf("authority_evidence[%d]", i)
@@ -847,6 +901,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		}
 		validateUniqueIdentifiers(prefix+".denials", authority.Denials, false, &fields)
 		validateDigest(prefix+".record_digest", authority.RecordDigest, &fields)
+		copy := authority
+		copy.RecordDigest = ""
+		validateCanonicalContractDigest(prefix+".record_digest", copy, authority.RecordDigest, &fields)
 	}
 	for i, partial := range invocation.PartialEvidence {
 		prefix := fmt.Sprintf("partial_evidence[%d]", i)
@@ -858,6 +915,9 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		validateIdentifier(prefix+".durable_reference", partial.DurableReference, &fields)
 		validateDigest(prefix+".content_sha256", partial.ContentSHA256, &fields)
 		validateDigest(prefix+".record_digest", partial.RecordDigest, &fields)
+		copy := partial
+		copy.RecordDigest = ""
+		validateCanonicalContractDigest(prefix+".record_digest", copy, partial.RecordDigest, &fields)
 	}
 	validateIdentifier("requested_action.action", invocation.RequestedAction.Action, &fields)
 	validateIdentifier("requested_action.subject", invocation.RequestedAction.Subject, &fields)
@@ -867,6 +927,13 @@ func ValidateContinuationInvocation(invocation ContinuationInvocation) error {
 		return &ContinuationValidationError{Fields: fields}
 	}
 	return nil
+}
+
+func validateCanonicalContractDigest(path string, record any, expected string, fields *[]string) {
+	digest, err := CanonicalSHA256(record)
+	if err != nil || digest != expected {
+		*fields = append(*fields, path+" does not bind the exact record")
+	}
 }
 
 func ValidateContinuationReport(report ContinuationReport, sourceHead string) error {

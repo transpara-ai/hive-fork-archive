@@ -529,7 +529,7 @@ strong enough to prove `exact` or `absent`.
 Hive invokes one configured runner with JSON stdin. The request contains no
 credential and names:
 
-- exact installed TLC plugin and schema identity;
+- exact installed TLC plugin, schema, skill, shipped conformance-core, and configured runner/argv identity;
 - source-chain records, principal authentication evidence, head, optional exact
   Human collaboration selection, and prior phase context;
 - target repository identity and current observations;
@@ -641,7 +641,7 @@ The primary local implementation surfaces are:
 | `pkg/hive/factoryv1/continuation_runtime.go` | Durable continuation envelopes, a durable compare-and-swap intent-store contract with a contention-tested reference store, EventGraph-first persistence, Work projection, split repair, and external-effect retry decisions. |
 | `pkg/hive/factory_v1_eventgraph.go` | Typed causal records and exact-payload replay. |
 | `pkg/hive/factory_v1_work.go` | Matching Work artifacts and split repair. |
-| A later separately sourced command/API surface | Production runner configuration and operator entrypoint after installed identity and authority are available. |
+| `cmd/hive/factory_tlc_change_workflow.go` | Separately sourced production command that authenticates installed identity, persists exact source/invocation/report twins, and invokes one bounded runner without enabling daemon behavior. |
 | Existing issue-scan intake and PR files | Exact snapshots, optional comment effect, RepoX affinity, and idempotent provider read-back. |
 | Existing worktree/runner surfaces | RepoX Git common directory validation, clean recovery worktrees, and partial preservation. |
 | Existing operator projection | Truthful continuation and recovery fields only. |
@@ -649,7 +649,14 @@ The primary local implementation surfaces are:
 This is a bounded local kernel, not production admission or external-effect
 authority. A production intent store must satisfy the compare-and-swap
 contract; a read followed by an unconditional write is nonconforming.
-Command/API wiring remains a separately sourced follow-on.
+The user separately sourced the command/API wiring after the initial
+implementation review. The implementation also adds an EventGraph-backed
+contender-token CAS, exact causal-edge resolution, convergent Work seeding,
+quarantined partial capture, clean-worktree recovery, and continuation-only
+guarded worktree and draft-PR entrypoints. Legacy issue-scan records remain
+readable but are not a fallback for `tlc-change-continuation/v1`. These
+semantic design bytes are a new review subject and do not inherit exact-blob
+approval from the earlier version.
 
 ## Cross-repository boundaries
 

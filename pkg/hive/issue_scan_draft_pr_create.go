@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/transpara-ai/eventgraph/go/pkg/types"
+	"github.com/transpara-ai/hive/pkg/hive/factoryv1"
 	"github.com/transpara-ai/work"
 )
 
@@ -56,6 +57,40 @@ type IssueScanDraftPRCreationReservation struct {
 	Result                   string `json:"result"`
 	ManualReconciliationOn   string `json:"manual_reconciliation_on"`
 	NoReadyReviewMergeDeploy bool   `json:"no_ready_review_merge_deploy"`
+}
+
+// CreateIssueScanDraftPRFromApprovedContinuation is the continuation-only PR
+// entrypoint. Existing legacy issue-scan callers retain their old contract;
+// every caller using tlc-change-continuation/v1 must enter here so RepoX,
+// frontier, authority, budget, and observe-before-retry checks execute
+// immediately before the existing guarded draft-PR path.
+func (r *Runtime) CreateIssueScanDraftPRFromApprovedContinuation(
+	ctx context.Context,
+	report factoryv1.ContinuationReport,
+	expectedRepository factoryv1.RepositoryIdentity,
+	candidateID string,
+	observation factoryv1.EffectObservationState,
+	authorityApplicable, budgetAvailable bool,
+	runID, requestID string,
+	client work.Epic11PullRequestCreator,
+) (IssueScanDraftPRCreationResult, factoryv1.EffectDecision, error) {
+	var result IssueScanDraftPRCreationResult
+	decision, err := factoryv1.ExecuteContinuationEffect(
+		ctx, report, expectedRepository, candidateID, "create_pr", observation,
+		authorityApplicable, budgetAvailable,
+		func(ctx context.Context) (factoryv1.EffectObservationState, error) {
+			var createErr error
+			result, createErr = r.CreateIssueScanDraftPRFromApprovedRequest(ctx, runID, requestID, client)
+			if createErr != nil {
+				return factoryv1.EffectUnknown, createErr
+			}
+			if !result.Created || !strings.EqualFold(result.Repository, expectedRepository.OwnerName) {
+				return factoryv1.EffectConflict, fmt.Errorf("created draft PR does not match continuation repository")
+			}
+			return factoryv1.EffectExact, nil
+		},
+	)
+	return result, decision, err
 }
 
 // CreateIssueScanDraftPRFromApprovedRequest consumes an approved draft-PR

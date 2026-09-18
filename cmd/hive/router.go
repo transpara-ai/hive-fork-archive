@@ -68,6 +68,8 @@ func helpText() string {
 	b.WriteString("  factory daemon           Always-on governing loop with governed issue-scan controls\n")
 	b.WriteString("  factory-v1 daemon        Durable three-worker TLC v1 loop and issue normalizer\n")
 	b.WriteString("  factory order            Submit one Order into the running daemon\n")
+	b.WriteString("  factory tlc-change-workflow\n")
+	b.WriteString("                           Invoke the exact installed TLC change workflow with durable recovery\n")
 	b.WriteString("  factory preflight-hive-unit\n")
 	b.WriteString("                           Read-only hive.service posture verifier\n")
 	b.WriteString("  factory scan-issues      Scan Transpara-AI GitHub issues into a queued run\n")

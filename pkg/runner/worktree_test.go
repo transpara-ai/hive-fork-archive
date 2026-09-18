@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,59 @@ import (
 
 	"github.com/transpara-ai/hive/pkg/safety"
 )
+
+func TestContinuationRecoveryPreservesPartialAndStartsClean(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	base := strings.TrimSpace(runGitForTest(t, repoDir, "rev-parse", "HEAD"))
+	partialTree, err := CreateTaskWorktree(repoDir, "partial continuation", "attempt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(partialTree.Cleanup)
+	if err := os.WriteFile(filepath.Join(partialTree.Dir, "README"), []byte("dirty tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partialTree.Dir, "untracked.txt"), []byte("dirty untracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := CapturePartialWorktreeEvidence(
+		context.Background(), "change-recovery", strings.Repeat("a", 64), "attempt-1",
+		partialTree.Dir, base, "eventgraph:partial:attempt-1", "runner_interrupted", "openai",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial.Authoritative || !partial.Quarantined || partial.UntrackedDigests["untracked.txt"] == "" {
+		t.Fatalf("partial evidence=%+v", partial)
+	}
+	destination := filepath.Join(t.TempDir(), "recovery")
+	recovery, err := CreateCleanRecoveryWorktree(context.Background(), repoDir, destination, "hive/recovery-test", partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(recovery.Cleanup)
+	if got := strings.TrimSpace(runGitForTest(t, recovery.Dir, "status", "--porcelain=v1", "--untracked-files=all")); got != "" {
+		t.Fatalf("recovery worktree is dirty: %s", got)
+	}
+	if got := strings.TrimSpace(runGitForTest(t, recovery.Dir, "rev-parse", "HEAD")); got != base {
+		t.Fatalf("recovery head=%s, want base=%s", got, base)
+	}
+	if got := strings.TrimSpace(runGitForTest(t, partialTree.Dir, "status", "--porcelain=v1", "--untracked-files=all")); got == "" {
+		t.Fatal("interrupted worktree was cleaned or reused")
+	}
+}
+
+func runGitForTest(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = directory
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
 
 // initGitRepo creates a minimal git repo in dir with one commit so that
 // worktree and branch operations have a valid HEAD to work from.

@@ -25,13 +25,14 @@ const (
 	EventRecoveryRecorded       EventType = "factory.v1.recovery.recorded"
 	EventIssueAmendmentRecorded EventType = "factory.v1.issue.amendment.blocked"
 	EventContinuationRecorded   EventType = "civilization.tlc.continuation.v1.recorded"
+	EventInvocationIntent       EventType = "civilization.tlc.continuation.v1.invocation.intent"
 )
 
 func (t EventType) valid() bool {
 	switch t {
 	case EventIdeaRecorded, EventIdeaRefined, EventOrderAccepted, EventOrderSubmitted, EventStageTransitioned,
 		EventInterventionRequested, EventInterventionResolved, EventRecoveryRecorded,
-		EventIssueAmendmentRecorded, EventContinuationRecorded:
+		EventIssueAmendmentRecorded, EventContinuationRecorded, EventInvocationIntent:
 		return true
 	default:
 		return false

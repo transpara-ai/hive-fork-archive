@@ -52,6 +52,8 @@ func continuationIdentity() TLCWorkflowIdentity {
 		PluginName: TLCGovernancePluginName, PluginVersion: "1.1.0",
 		SkillName: TLCChangeWorkflowSkill, ContractVersion: TLCContinuationVersion,
 		SchemaSHA256: strings.Repeat("a", 64), SkillSHA256: strings.Repeat("b", 64),
+		ContractCoreSHA256: strings.Repeat("c", 64),
+		RunnerSHA256:       strings.Repeat("d", 64), RunnerArgvSHA256: strings.Repeat("e", 64),
 	}
 }
 
@@ -345,6 +347,42 @@ func TestStrictContractShapeRejectsMissingAndNullFields(t *testing.T) {
 	}
 }
 
+func TestAuxiliaryContractDigestRejectsTamperedRecord(t *testing.T) {
+	t.Parallel()
+	invocation, _ := continuationInvocationFixture(t)
+	content := "bounded authored direction"
+	author := AuthorResult{
+		ResultID: "author-result-1", RequirementID: "author-requirement-1",
+		SourceChainHead: invocation.SourceChain.HeadDigest, Mode: "interactive_host",
+		Author:        Principal{Kind: "model", StableID: "codex:session", SubjectRef: "codex:session", ModelID: "gpt-5", Lineage: "openai"},
+		Content:       ExactContent{MediaType: "text/plain", Encoding: "utf-8", Readability: "readable", DigestVerified: true, Inline: &content},
+		ContentSHA256: HashText(content), PromptSHA256: strings.Repeat("d", 64),
+		AttestationID: "interactive-host:1", BoundedDirection: true,
+	}
+	digest, err := CanonicalSHA256(author)
+	if err != nil {
+		t.Fatal(err)
+	}
+	author.ResultDigest = digest
+	invocation.AuthorResults = []AuthorResult{author}
+	body, err := json.Marshal(invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeContinuationInvocation(body); err != nil {
+		t.Fatalf("exact auxiliary digest was rejected: %v", err)
+	}
+
+	invocation.AuthorResults[0].InvalidatesDirection = true
+	body, err = json.Marshal(invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeContinuationInvocation(body); err == nil || !strings.Contains(err.Error(), "does not bind the exact record") {
+		t.Fatalf("tampered author result was not rejected by digest binding: %v", err)
+	}
+}
+
 type failNextContinuationAttach struct {
 	ContinuationWorkStore
 	fail bool
@@ -391,6 +429,9 @@ func TestContinuationPersistenceRepairsEventGraphWorkSplit(t *testing.T) {
 	splitEvent, complete, err := PersistContinuationRecord(context.Background(), events, failing, reportEnvelope)
 	if err == nil || complete || splitEvent.ID == "" {
 		t.Fatalf("split append was not exposed safely: event=%s complete=%v err=%v", splitEvent.ID, complete, err)
+	}
+	if len(splitEvent.Causes) != 1 || splitEvent.Causes[0] != seedEvent.ID {
+		t.Fatalf("declared causal record was not an EventGraph cause: got=%v want=%s", splitEvent.Causes, seedEvent.ID)
 	}
 	repaired, err := RepairContinuationProjection(context.Background(), work, splitEvent)
 	if err != nil || !repaired {

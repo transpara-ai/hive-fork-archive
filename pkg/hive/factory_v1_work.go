@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/transpara-ai/eventgraph/go/pkg/event"
 	"github.com/transpara-ai/eventgraph/go/pkg/store"
@@ -62,10 +63,11 @@ type factoryV1ContinuationWorkQuarantine struct {
 // the existing Work TaskStore. EventGraph remains canonical: every Work task
 // is causally descended from its accepted-order event.
 type FactoryV1WorkStore struct {
-	store store.Store
-	tasks *work.TaskStore
-	actor types.ActorID
-	conv  types.ConversationID
+	store          store.Store
+	tasks          *work.TaskStore
+	actor          types.ActorID
+	conv           types.ConversationID
+	continuationMu sync.Mutex
 }
 
 func NewFactoryV1WorkStore(s store.Store, factory *event.EventFactory, signer event.Signer, actor types.ActorID, conv types.ConversationID) (*FactoryV1WorkStore, error) {
@@ -346,6 +348,8 @@ func (s *FactoryV1WorkStore) SeedContinuation(ctx context.Context, seed factoryv
 	if err := ctx.Err(); err != nil {
 		return factoryv1.ContinuationWorkLink{}, err
 	}
+	s.continuationMu.Lock()
+	defer s.continuationMu.Unlock()
 	if existing, err := s.GetContinuation(ctx, seed.ChainID); err == nil {
 		if existing.SourceChainHead != seed.SourceChainHead || existing.SourceEventID != seed.SourceEventID || existing.TargetRepository != seed.TargetRepository || existing.Quarantined {
 			return factoryv1.ContinuationWorkLink{}, factoryv1.ErrAcceptedTupleConflict
@@ -358,16 +362,25 @@ func (s *FactoryV1WorkStore) SeedContinuation(ctx context.Context, seed factoryv
 	if err != nil {
 		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("continuation source EventGraph event id: %w", err)
 	}
-	task, err := s.tasks.Create(
-		s.actor,
-		"TLC continuation: "+seed.ChainID,
-		"Versioned TLC change workflow continuation for "+seed.TargetRepository.OwnerName,
-		[]types.EventID{sourceEventID},
-		s.conv,
-		work.PriorityHigh,
-	)
+	taskWorkspace := continuationTaskWorkspace(seed.ChainID)
+	taskID, found, err := s.findContinuationTask(ctx, taskWorkspace, sourceEventID)
 	if err != nil {
-		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("seed continuation Work task: %w", err)
+		return factoryv1.ContinuationWorkLink{}, err
+	}
+	if !found {
+		task, err := s.tasks.CreateInWorkspace(
+			s.actor,
+			"TLC continuation: "+seed.ChainID,
+			"Versioned TLC change workflow continuation for "+seed.TargetRepository.OwnerName,
+			taskWorkspace,
+			[]types.EventID{sourceEventID},
+			s.conv,
+			work.PriorityHigh,
+		)
+		if err != nil {
+			return factoryv1.ContinuationWorkLink{}, fmt.Errorf("seed continuation Work task: %w", err)
+		}
+		taskID = task.ID
 	}
 	metadata := factoryV1ContinuationWorkSeed{
 		SchemaVersion: factoryv1.ContinuationSchemaVersion, ChainID: seed.ChainID,
@@ -378,10 +391,39 @@ func (s *FactoryV1WorkStore) SeedContinuation(ctx context.Context, seed factoryv
 	if err != nil {
 		return factoryv1.ContinuationWorkLink{}, err
 	}
-	if err := s.tasks.AddArtifact(s.actor, task.ID, factoryV1ContinuationSeedLabel, "application/json", string(body), []types.EventID{sourceEventID, task.ID}, s.conv); err != nil {
+	if err := s.tasks.AddArtifact(s.actor, taskID, factoryV1ContinuationSeedLabel, "application/json", string(body), []types.EventID{sourceEventID, taskID}, s.conv); err != nil {
 		return factoryv1.ContinuationWorkLink{}, fmt.Errorf("attach continuation Work seed: %w", err)
 	}
 	return s.GetContinuation(ctx, seed.ChainID)
+}
+
+func continuationTaskWorkspace(chainID string) string {
+	return "tlc-continuation:" + factoryv1.HashText(chainID)[:32]
+}
+
+func (s *FactoryV1WorkStore) findContinuationTask(ctx context.Context, taskWorkspace string, sourceEventID types.EventID) (types.EventID, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return types.EventID{}, false, err
+	}
+	var found types.EventID
+	if err := s.forEachWorkEvent(ctx, work.EventTypeTaskCreated, func(item event.Event) error {
+		content, ok := item.Content().(work.TaskCreatedContent)
+		if !ok || content.Workspace != taskWorkspace {
+			return nil
+		}
+		causes := item.Causes()
+		if len(causes) != 1 || causes[0] != sourceEventID {
+			return factoryv1.ErrAcceptedTupleConflict
+		}
+		if !found.IsZero() && found != item.ID() {
+			return factoryv1.ErrAcceptedTupleConflict
+		}
+		found = item.ID()
+		return nil
+	}); err != nil {
+		return types.EventID{}, false, fmt.Errorf("find continuation Work task: %w", err)
+	}
+	return found, !found.IsZero(), nil
 }
 
 func (s *FactoryV1WorkStore) GetContinuation(ctx context.Context, chainID string) (factoryv1.ContinuationWorkLink, error) {
@@ -452,6 +494,8 @@ func (s *FactoryV1WorkStore) AttachContinuationArtifact(ctx context.Context, art
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	s.continuationMu.Lock()
+	defer s.continuationMu.Unlock()
 	link, err := s.GetContinuation(ctx, artifact.ChainID)
 	if err != nil {
 		return "", err
@@ -536,6 +580,8 @@ func (s *FactoryV1WorkStore) QuarantineContinuation(ctx context.Context, chainID
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.continuationMu.Lock()
+	defer s.continuationMu.Unlock()
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("continuation quarantine reason is required")
 	}

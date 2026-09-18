@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,6 +112,59 @@ func TestFactoryV1ContinuationAdaptersPersistAndReadBackTwins(t *testing.T) {
 	replayed, complete, err := factoryv1.SeedContinuationSource(ctx, graph, workStore, repository, envelope)
 	if err != nil || !complete || replayed.ID != eventRecord.ID {
 		t.Fatalf("continuation replay was not idempotent: event=%s complete=%v err=%v", replayed.ID, complete, err)
+	}
+}
+
+func TestFactoryV1ContinuationWorkSeedConvergesUnderContention(t *testing.T) {
+	ctx := context.Background()
+	eventStore, factory, signer, actor, conversation := newDecisionTestStore(t)
+	workpkg.RegisterWithRegistry(factory.Registry)
+	graph, err := NewFactoryV1EventGraphStore(eventStore, factory, signer, actor, conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workStore, err := NewFactoryV1WorkStore(eventStore, factory, signer, actor, conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := factoryv1.Principal{Kind: "human", StableID: actor.Value(), SubjectRef: actor.Value()}
+	source, err := factoryv1.NewContinuationRecord(
+		factoryv1.ContinuationRecordSource, "adapter-contention", strings.Repeat("a", 64), strings.Repeat("a", 64),
+		nil, principal, "hive", time.Date(2026, 8, 30, 13, 0, 0, 0, time.UTC), map[string]string{"source": "exact"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := factoryv1.RepositoryIdentity{Provider: "github", NumericID: 101, OwnerName: "transpara-ai/hive"}
+	const contenders = 12
+	errorsByCaller := make(chan error, contenders)
+	var wait sync.WaitGroup
+	for index := 0; index < contenders; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, complete, seedErr := factoryv1.SeedContinuationSource(ctx, graph, workStore, repository, source)
+			if seedErr == nil && !complete {
+				seedErr = errors.New("incomplete continuation seed")
+			}
+			errorsByCaller <- seedErr
+		}()
+	}
+	wait.Wait()
+	close(errorsByCaller)
+	for seedErr := range errorsByCaller {
+		if seedErr != nil {
+			t.Fatalf("concurrent continuation seed: %v", seedErr)
+		}
+	}
+	link, err := workStore.GetContinuation(ctx, source.ChainID)
+	if err != nil || link.Quarantined {
+		t.Fatalf("converged continuation link=%+v err=%v", link, err)
+	}
+	workspace := continuationTaskWorkspace(source.ChainID)
+	taskID, found, err := workStore.findContinuationTask(ctx, workspace, types.MustEventID(link.SourceEventID))
+	if err != nil || !found || taskID.Value() != link.TaskID {
+		t.Fatalf("canonical continuation task=%s found=%v link=%s err=%v", taskID.Value(), found, link.TaskID, err)
 	}
 }
 
