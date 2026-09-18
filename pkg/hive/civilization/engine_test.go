@@ -22,6 +22,27 @@ type fakeProvider struct {
 	blockReviewOnce         bool
 }
 
+type crashOnceProvider struct {
+	delegate       *fakeProvider
+	mu             sync.Mutex
+	crashImplement bool
+	attempts       []string
+}
+
+func (p *crashOnceProvider) Run(ctx context.Context, request ProviderRequest) (ProviderResult, error) {
+	if request.Operation == OperationImplement {
+		p.mu.Lock()
+		p.attempts = append(p.attempts, request.AttemptID)
+		crash := p.crashImplement
+		p.crashImplement = false
+		p.mu.Unlock()
+		if crash {
+			panic("simulated process loss during provider attempt")
+		}
+	}
+	return p.delegate.Run(ctx, request)
+}
+
 func (p *fakeProvider) Run(_ context.Context, request ProviderRequest) (ProviderResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -294,6 +315,69 @@ func TestEngineReimplementsWhenRecoveredWorktreeLostRecordedDiff(t *testing.T) {
 	}
 	if provider.runs[OperationImplement] != 2 || provider.runs[OperationReview] != 2 {
 		t.Fatalf("provider runs after recovery = %+v", provider.runs)
+	}
+}
+
+func TestEngineRestartReusesInFlightProviderAttempt(t *testing.T) {
+	engine, _, effects := newTestEngine(t, "Routine", false)
+	provider := &crashOnceProvider{
+		delegate:       &fakeProvider{route: "Routine"},
+		crashImplement: true,
+	}
+	engine.provider = provider
+	source := tlcbridge.Source{
+		Kind: tlcbridge.SourceHuman, Identity: "idea:in-flight-restart", Repository: "transpara-ai/hive",
+	}
+	queued, err := engine.SubmitText(context.Background(), source, "Make a restart-safe change.")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var processLoss any
+	func() {
+		defer func() { processLoss = recover() }()
+		_, _ = engine.Run(context.Background(), queued.WorkID)
+	}()
+	if processLoss == nil {
+		t.Fatal("provider attempt did not simulate process loss")
+	}
+	afterLoss, err := engine.mustFind(context.Background(), queued.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterLoss.State != StateImplementing || len(afterLoss.ProviderRuns) != 1 {
+		t.Fatalf("after process loss = %+v", afterLoss)
+	}
+
+	restarted, err := NewEngine(EngineConfig{Store: engine.store, Provider: provider, Effects: effects})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, err := restarted.Run(context.Background(), queued.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.State != StateReady {
+		t.Fatalf("restarted result = %+v", ready)
+	}
+	provider.mu.Lock()
+	attempts := append([]string(nil), provider.attempts...)
+	provider.mu.Unlock()
+	if len(attempts) != 2 || attempts[0] != attempts[1] {
+		t.Fatalf("implementation attempts = %v, want one exact attempt reused", attempts)
+	}
+	events, err := engine.store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments := 0
+	for _, event := range events {
+		if event.WorkID == queued.WorkID && event.IdempotencyKey == "worker:"+attempts[0] {
+			assignments++
+		}
+	}
+	if assignments != 1 {
+		t.Fatalf("durable assignment count = %d, want 1", assignments)
 	}
 }
 
